@@ -1,0 +1,20 @@
+version: "0.1.0"
+name: node_key
+summary: "Lightweight node identity key management, CSR, signing, and trust verification on ESP-IDF using mbedTLS."
+license: ISC
+url: https://github.com/swgiacomelli/esp_node_key
+
+targets:
+  - esp32
+  - esp32s2
+  - esp32s3
+  - esp32c3
+  - esp32c6
+  - esp32h2
+
+dependencies:
+  idf: ">=5.0"
+
+examples:
+  - path: examples/basic
+    description: "Generate key, sign/verify message, export pubkey, and create CSR"
