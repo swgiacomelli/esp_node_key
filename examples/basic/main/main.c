@@ -30,15 +30,15 @@ void app_main(void)
         ESP_LOGI(TAG, "verify ok");
     }
 
-    char *pub_pem = NULL; size_t pub_len = 0;
-    if (node_key_export_public_pem(&nk, &pub_pem, &pub_len) == ESP_OK) {
-        ESP_LOGI(TAG, "public key PEM:\n%.*s", (int)pub_len, pub_pem);
-        free(pub_pem);
+    unsigned char *pub_der = NULL; size_t pub_len = 0;
+    if (node_key_export_public_der(&nk, &pub_der, &pub_len) == ESP_OK) {
+        ESP_LOGI(TAG, "public key DER len: %u", (unsigned)pub_len);
+        free(pub_der);
     }
 
     node_csr_t csr = { .node_id = nk.node_id };
-    if (node_key_generate_csr(&nk, &csr) == ESP_OK) {
-        ESP_LOGI(TAG, "CSR PEM:\n%.*s", (int)csr.csr_pem_len, csr.csr_pem);
+    if (node_key_generate_csr_der(&nk, &csr) == ESP_OK) {
+        ESP_LOGI(TAG, "CSR DER len: %u", (unsigned)csr.csr_der_len);
         node_csr_free(&csr);
     }
 

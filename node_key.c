@@ -40,37 +40,36 @@ static esp_err_t parse_der(const unsigned char *der, size_t len, mbedtls_pk_cont
     return ESP_OK;
 }
 
-static esp_err_t parse_pem_chain(const char *pem, size_t len, mbedtls_x509_crt *crt)
+static esp_err_t parse_der_cert(const unsigned char *der, size_t len, mbedtls_x509_crt *crt)
 {
-    if (!pem || len == 0 || !crt) {
+    if (!der || len == 0 || !crt) {
         return ESP_ERR_INVALID_ARG;
     }
-
     mbedtls_x509_crt_init(crt);
-
-    int ret;
-    if (pem[len - 1] == '\0') {
-        ret = mbedtls_x509_crt_parse(crt, (const unsigned char *)pem, len);
-    } else {
-        // Ensure null-terminated PEM by copying to a temporary buffer
-        size_t tmp_len = len + 1;
-        unsigned char *tmp = (unsigned char *)malloc(tmp_len);
-        if (!tmp) {
-            mbedtls_x509_crt_free(crt);
-            return ESP_ERR_NO_MEM;
-        }
-        memcpy(tmp, pem, len);
-        tmp[len] = '\0';
-        ret = mbedtls_x509_crt_parse(crt, tmp, tmp_len);
-        // tmp contains public material; zeroizing isn't strictly required but harmless
-        secure_free(tmp, tmp_len);
-    }
-
+    int ret = mbedtls_x509_crt_parse_der(crt, der, len);
     if (ret != 0) {
         mbedtls_x509_crt_free(crt);
         return ESP_FAIL;
     }
+    return ESP_OK;
+}
 
+static esp_err_t parse_der_cert_list(const unsigned char **ders, const size_t *lens, size_t count, mbedtls_x509_crt *chain)
+{
+    if (!chain) return ESP_ERR_INVALID_ARG;
+    mbedtls_x509_crt_init(chain);
+    if (!ders || !lens || count == 0) return ESP_ERR_INVALID_ARG;
+    for (size_t i = 0; i < count; ++i) {
+        if (!ders[i] || lens[i] == 0) {
+            mbedtls_x509_crt_free(chain);
+            return ESP_ERR_INVALID_ARG;
+        }
+        int ret = mbedtls_x509_crt_parse_der(chain, ders[i], lens[i]);
+        if (ret != 0) {
+            mbedtls_x509_crt_free(chain);
+            return ESP_FAIL;
+        }
+    }
     return ESP_OK;
 }
 
@@ -85,8 +84,8 @@ esp_err_t node_key_free(node_key_t *nk)
         nk->node_key_der = NULL;
         nk->node_key_der_len = 0;
     }
-    // node_id and node_cert_pem are not owned; just clear lengths/pointers if needed
-    nk->node_cert_pem_len = 0;
+    // node_id and node_cert_der are not owned; just clear lengths/pointers if needed
+    nk->node_cert_der_len = 0;
     return ESP_OK;
 }
 
@@ -95,10 +94,10 @@ esp_err_t node_csr_free(node_csr_t *csr)
     if (!csr) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (csr->csr_pem) {
-        secure_free(csr->csr_pem, csr->csr_pem_len);
-        csr->csr_pem = NULL;
-        csr->csr_pem_len = 0;
+    if (csr->csr_der) {
+        secure_free(csr->csr_der, csr->csr_der_len);
+        csr->csr_der = NULL;
+        csr->csr_der_len = 0;
     }
     return ESP_OK;
 }
@@ -122,8 +121,8 @@ esp_err_t node_root_trust_free(node_root_trust_t *rts)
     if (!rts) {
         return ESP_ERR_INVALID_ARG;
     }
-    // CA bundle is not owned; do not free
-    rts->ca_bundle_pem_len = 0;
+    // CA list is not owned; do not free
+    rts->ca_count = 0;
     return ESP_OK;
 }
 
@@ -202,7 +201,7 @@ esp_err_t node_key_generate(node_key_t *nk)
     return ESP_OK;
 }
 
-esp_err_t node_key_generate_csr(const node_key_t *nk, node_csr_t *csr)
+esp_err_t node_key_generate_csr_der(const node_key_t *nk, node_csr_t *csr)
 {
     if (!nk || !csr) {
         return ESP_ERR_INVALID_ARG;
@@ -238,30 +237,27 @@ esp_err_t node_key_generate_csr(const node_key_t *nk, node_csr_t *csr)
         return ESP_FAIL;
     }
 
-    int r = mbedtls_x509write_csr_pem(&req, buf, sizeof(buf),
+    // Write CSR as DER into tail of buffer
+    int r = mbedtls_x509write_csr_der(&req, buf, sizeof(buf),
                                       mbedtls_ctr_drbg_random, &drbg);
     mbedtls_x509write_csr_free(&req);
     mbedtls_pk_free(&pk);
     mbedtls_ctr_drbg_free(&drbg);
     mbedtls_entropy_free(&ent);
-    if (r != 0) {
+    if (r <= 0) {
         return ESP_FAIL;
     }
-
-    size_t pem_len = strlen((char *)buf) + 1;
-
-    if (csr->csr_pem) {
-        secure_free(csr->csr_pem, csr->csr_pem_len);
-        csr->csr_pem = NULL;
+    size_t der_len = (size_t)r;
+    if (csr->csr_der) {
+        secure_free(csr->csr_der, csr->csr_der_len);
+        csr->csr_der = NULL;
     }
-
-    csr->csr_pem = (char *)malloc(pem_len);
-    if (!csr->csr_pem) {
+    csr->csr_der = (unsigned char *)malloc(der_len);
+    if (!csr->csr_der) {
         return ESP_ERR_NO_MEM;
     }
-
-    memcpy(csr->csr_pem, buf, pem_len);
-    csr->csr_pem_len = pem_len;
+    memcpy(csr->csr_der, buf + sizeof(buf) - der_len, der_len);
+    csr->csr_der_len = der_len;
 
     return ESP_OK;
 }
@@ -358,27 +354,27 @@ esp_err_t node_key_verify_signature(const node_key_t *nk, const uint8_t* data, s
 
 esp_err_t node_key_verify_root_trust(const node_key_t *nk, const node_root_trust_t *rts)
 {
-    if (!nk || !nk->node_cert_pem || nk->node_cert_pem_len == 0 || !rts || !rts->ca_bundle_pem || rts->ca_bundle_pem_len == 0) {
+    if (!nk || !nk->node_cert_der || nk->node_cert_der_len == 0 || !rts || !rts->ca_der_list || !rts->ca_der_lens || rts->ca_count == 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
     mbedtls_x509_crt crt;
-    if (parse_pem_chain(nk->node_cert_pem, nk->node_cert_pem_len, &crt) != ESP_OK) {
+    if (parse_der_cert(nk->node_cert_der, nk->node_cert_der_len, &crt) != ESP_OK) {
         return ESP_FAIL;
     }
 
-    mbedtls_x509_crt ca_bundle;
-    if (parse_pem_chain(rts->ca_bundle_pem, rts->ca_bundle_pem_len, &ca_bundle) != ESP_OK) {
+    mbedtls_x509_crt ca_chain;
+    if (parse_der_cert_list(rts->ca_der_list, rts->ca_der_lens, rts->ca_count, &ca_chain) != ESP_OK) {
         mbedtls_x509_crt_free(&crt);
         return ESP_FAIL;
     }
 
     uint32_t flags = 0;
-    // Verify device certificate chain against the CA bundle as trust store; no CRL provided
-    int ret = mbedtls_x509_crt_verify(&crt, &ca_bundle, NULL,
+    // Verify device certificate against the CA chain as trust store; no CRL provided
+    int ret = mbedtls_x509_crt_verify(&crt, &ca_chain, NULL,
                                       NULL, &flags, NULL, NULL);
     mbedtls_x509_crt_free(&crt);
-    mbedtls_x509_crt_free(&ca_bundle);
+    mbedtls_x509_crt_free(&ca_chain);
     if (ret != 0 || flags != 0) {
         return ESP_FAIL;
     }
@@ -388,24 +384,24 @@ esp_err_t node_key_verify_root_trust(const node_key_t *nk, const node_root_trust
 
 esp_err_t node_key_verify_root_signature(const node_root_trust_t *rts, const uint8_t *data, size_t data_len, const node_signature_t *sig)
 {
-    if (!rts || !rts->ca_bundle_pem || rts->ca_bundle_pem_len == 0 || !data || data_len == 0 || !sig || !sig->signature || sig->signature_len == 0) {
+    if (!rts || !rts->ca_der_list || !rts->ca_der_lens || rts->ca_count == 0 || !data || data_len == 0 || !sig || !sig->signature || sig->signature_len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    // Parse CA bundle once; will use it both as trust anchors and possible signers
-    mbedtls_x509_crt ca_bundle;
-    if (parse_pem_chain(rts->ca_bundle_pem, rts->ca_bundle_pem_len, &ca_bundle) != ESP_OK) {
+    // Parse CA list once; will use it both as trust anchors and possible signers
+    mbedtls_x509_crt ca_chain;
+    if (parse_der_cert_list(rts->ca_der_list, rts->ca_der_lens, rts->ca_count, &ca_chain) != ESP_OK) {
         return ESP_FAIL;
     }
 
-    // Strategy: iterate certificates in bundle and pick a signer whose chain verifies against the bundle.
+    // Strategy: iterate certificates in list and pick a signer whose chain verifies against the list.
     // Then verify the signature with that cert's public key.
-    mbedtls_x509_crt *candidate = &ca_bundle;
+    mbedtls_x509_crt *candidate = &ca_chain;
     esp_err_t result = ESP_FAIL;
-    for (mbedtls_x509_crt *cur = &ca_bundle; cur != NULL; cur = cur->next) {
+    for (mbedtls_x509_crt *cur = &ca_chain; cur != NULL; cur = cur->next) {
         uint32_t flags = 0;
-        // Verify cur against the bundle (trust = bundle); no CRL provided
-        int v = mbedtls_x509_crt_verify(cur, &ca_bundle, NULL, NULL, &flags, NULL, NULL);
+        // Verify cur against the chain (trust = chain); no CRL provided
+        int v = mbedtls_x509_crt_verify(cur, &ca_chain, NULL, NULL, &flags, NULL, NULL);
         if (v == 0 && flags == 0) {
             candidate = cur;
             // Prefer certificates with suitable key usages: digitalSignature or keyCertSign
@@ -425,7 +421,7 @@ esp_err_t node_key_verify_root_signature(const node_root_trust_t *rts, const uin
 
     if (result != ESP_OK) {
         // No valid signer found
-        mbedtls_x509_crt_free(&ca_bundle);
+        mbedtls_x509_crt_free(&ca_chain);
         return ESP_FAIL;
     }
 
@@ -435,7 +431,7 @@ esp_err_t node_key_verify_root_signature(const node_root_trust_t *rts, const uin
 
     int ret = mbedtls_pk_verify(&candidate->pk, MBEDTLS_MD_SHA256, hash, sizeof(hash),
                                  (const unsigned char *)sig->signature, sig->signature_len);
-    mbedtls_x509_crt_free(&ca_bundle);
+    mbedtls_x509_crt_free(&ca_chain);
     if (ret != 0) {
         return ESP_FAIL;
     }
@@ -471,25 +467,25 @@ esp_err_t node_key_set_key_der(node_key_t *nk, const uint8_t *der, size_t der_le
     return ESP_OK;
 }
 
-esp_err_t node_key_set_cert_pem(node_key_t *nk, const char *pem, size_t pem_len)
+esp_err_t node_key_set_cert_der(node_key_t *nk, const unsigned char *der, size_t der_len)
 {
-    if (!nk || !pem || pem_len == 0) {
+    if (!nk || !der || der_len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
     // Validate parseability (no ownership; just a view)
     mbedtls_x509_crt crt;
-    if (parse_pem_chain(pem, pem_len, &crt) != ESP_OK) {
+    if (parse_der_cert(der, der_len, &crt) != ESP_OK) {
         return ESP_FAIL;
     }
     mbedtls_x509_crt_free(&crt);
-    nk->node_cert_pem = pem;
-    nk->node_cert_pem_len = pem_len;
+    nk->node_cert_der = der;
+    nk->node_cert_der_len = der_len;
     return ESP_OK;
 }
 
-esp_err_t node_key_export_public_pem(const node_key_t *nk, char **out_pem, size_t *out_pem_len)
+esp_err_t node_key_export_public_der(const node_key_t *nk, unsigned char **out_der, size_t *out_der_len)
 {
-    if (!nk || !nk->node_key_der || nk->node_key_der_len == 0 || !out_pem || !out_pem_len) {
+    if (!nk || !nk->node_key_der || nk->node_key_der_len == 0 || !out_der || !out_der_len) {
         return ESP_ERR_INVALID_ARG;
     }
     mbedtls_pk_context pk;
@@ -497,23 +493,18 @@ esp_err_t node_key_export_public_pem(const node_key_t *nk, char **out_pem, size_
         return ESP_FAIL;
     }
     unsigned char buf[800];
-    int ret = mbedtls_pk_write_pubkey_pem(&pk, buf, sizeof(buf));
+    int ret = mbedtls_pk_write_pubkey_der(&pk, buf, sizeof(buf));
     mbedtls_pk_free(&pk);
-    if (ret != 0) {
+    if (ret <= 0) {
         return ESP_FAIL;
     }
-    // For safety, compute actual length as C string
-    size_t pem_len = strnlen((const char *)buf, sizeof(buf));
-    if (pem_len == sizeof(buf)) {
-        return ESP_FAIL;
-    }
-    pem_len += 1; // include NUL
-    *out_pem = (char *)malloc(pem_len);
-    if (!*out_pem) {
+    size_t der_len = (size_t)ret;
+    *out_der = (unsigned char *)malloc(der_len);
+    if (!*out_der) {
         return ESP_ERR_NO_MEM;
     }
-    memcpy(*out_pem, buf, pem_len);
-    *out_pem_len = pem_len;
+    memcpy(*out_der, buf + sizeof(buf) - der_len, der_len);
+    *out_der_len = der_len;
     return ESP_OK;
 }
 

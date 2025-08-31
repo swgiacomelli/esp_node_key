@@ -49,20 +49,18 @@ static void test_public_key_export_and_csr_impl(void)
     nk.node_id = "TEST-NODE";
     TEST_ASSERT_EQUAL(ESP_OK, node_key_generate(&nk));
 
-    char *pub_pem = NULL; size_t pub_len = 0;
-    TEST_ASSERT_EQUAL(ESP_OK, node_key_export_public_pem(&nk, &pub_pem, &pub_len));
-    TEST_ASSERT_NOT_NULL(pub_pem);
+    unsigned char *pub_der = NULL; size_t pub_len = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, node_key_export_public_der(&nk, &pub_der, &pub_len));
+    TEST_ASSERT_NOT_NULL(pub_der);
     TEST_ASSERT_TRUE(pub_len > 0);
-    TEST_ASSERT_NOT_NULL(strstr(pub_pem, "BEGIN PUBLIC KEY"));
 
     node_csr_t csr = (node_csr_t){0};
     csr.node_id = nk.node_id;
-    TEST_ASSERT_EQUAL(ESP_OK, node_key_generate_csr(&nk, &csr));
-    TEST_ASSERT_NOT_NULL(csr.csr_pem);
-    TEST_ASSERT_TRUE(csr.csr_pem_len > 0);
-    TEST_ASSERT_NOT_NULL(strstr(csr.csr_pem, "BEGIN CERTIFICATE REQUEST"));
+    TEST_ASSERT_EQUAL(ESP_OK, node_key_generate_csr_der(&nk, &csr));
+    TEST_ASSERT_NOT_NULL(csr.csr_der);
+    TEST_ASSERT_TRUE(csr.csr_der_len > 0);
 
-    free(pub_pem);
+    free(pub_der);
     node_csr_free(&csr);
     node_key_free(&nk);
 }

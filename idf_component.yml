@@ -1,6 +1,18 @@
-version: "0.1.0"
+version: "0.2.0"
 name: node_key
 summary: "Lightweight node identity key management, CSR, signing, and trust verification on ESP-IDF using mbedTLS."
+description: |
+  This component provides functionality for managing a node's identity key pair, generating CSRs, signing messages, and verifying signatures using mbedTLS on ESP-IDF. As of v0.2.0, public interfaces use DER for keys, CSRs, device certificates, and CA lists. It includes utilities for Base64 encoding/decoding of signatures. The component is designed to be lightweight and efficient, making it suitable for resource-constrained embedded systems.
+
+  Key features:
+  - Generate and store ECC key pairs (secp256r1) in DER
+  - Export public keys in DER (SubjectPublicKeyInfo)
+  - Create Certificate Signing Requests (CSRs) in DER
+  - Sign messages and verify signatures (ECDSA + SHA-256); signatures are DER
+  - Verify device certificate (DER) chains against a DER CA list
+  - Base64 helpers for signatures
+
+  This component is ideal for IoT devices that require secure identity management and communication.
 license: ISC
 url: https://github.com/swgiacomelli/esp_node_key
 
